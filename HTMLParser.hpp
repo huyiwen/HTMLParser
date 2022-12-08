@@ -31,6 +31,7 @@ using std::shared_ptr;
 using std::weak_ptr;
 using std::function;
 
+// #define DEBUG
 
 #ifdef DEBUG
 #define debug std::wcout
@@ -78,6 +79,8 @@ public:  // utils
     typedef function<bool (const HTMLElement&)> FT;  // filter type
     typedef function<bool (const PT)> AT;  // if return false: the signal of early_stopping
     typedef vector<PT> RT;  // return type
+
+    static inline std::unordered_set<wstring> _INPUT = {L"select", L"textarea", L"input"};
 
 
 public:  // initialization
@@ -133,6 +136,12 @@ public:  // initialization
             pair.clear();
             split(p, L'=', pair, true);
             if (pair.size() == 2) {
+                if (pair[1].front() == L'"') {
+                    pair[1] = pair[1].substr(1);
+                }
+                if (pair[1].back() == L'"') {
+                    pair[1].pop_back();
+                }
                 this->AddAttribute(pair[0], pair[1]);
             } else if (pair.size() == 1) {
                 this->AddAttribute(pair[0]);
@@ -160,9 +169,9 @@ public: // get information: basics
         return this->GetAttribute(key);
     }
 
-    void GetElementsByFilter(const AT &adder, const FT &filter, bool recursive) const {
-        for (auto ep: this->_children) {
-            if (filter(*ep)) {
+    void GetElementsByFilter(const AT &adder, const FT &filter, bool recursive, bool text=false) const {
+        for (const auto &ep: this->_children) {
+            if ((!text || !ep->_basic_text.size()) && filter(*ep)) {
                 if (!adder(ep)) {
                     return ;
                 }
@@ -174,7 +183,7 @@ public: // get information: basics
     }
 
     void Traverse(const function<void (const HTMLElement&)> &lambda, bool recursive, bool first) const {
-        for (const auto ep: this->_children) {
+        for (const auto &ep: this->_children) {
             lambda(*ep);
             if (recursive) {
                 ep->Traverse(lambda, recursive, first);
@@ -182,17 +191,47 @@ public: // get information: basics
         }
     }
 
+    void GetBrothersByFilter(const AT &adder, const FT &filter, bool rear = true) const {
+        auto fa = this->_father.lock();
+        auto cur = this->shared_from_this();
+        if (rear) {
+            bool found = false;
+            for (const auto &ep: fa->_children) {
+                if (found && filter(*ep)) {
+                    if (!adder(ep)) {
+                        return ;
+                    }
+                }
+                if (ep == cur) {
+                    found = true;
+                }
+            }
+        } else {
+            exit(2);  // Not Implemented Error
+        }
+    }
 
 public:  // get information: advanced
+        
+    void GetBrothersByTag(std::set<HTMLElement::PT> &results, const wstring &tag, bool first, bool reverse) {
+        this->GetBrothersByFilter(
+            [&results, &first](const HTMLElement::PT pt) -> bool {
+                results.insert(pt);
+                return !first;
+            },
+            [&tag, &reverse](const HTMLElement &__ele) -> bool {
+                return (__ele.GetTag() == tag) ^ reverse;
+            });
+    }
 
-    void GetElementsById(std::set<HTMLElement::PT> &results, const wstring &id, bool recursive, bool first) const {
+    void GetElementsById(std::set<HTMLElement::PT> &results, const wstring &id, bool recursive, bool first, bool reverse) const {
         this->GetElementsByFilter(
             [&results, &first](const HTMLElement::PT pt) -> bool {
                 results.insert(pt);
                 return !first;
             },
-            [&id](const HTMLElement &__ele) -> bool {
-                return (__ele[L"id"] == id);
+            [&id, &reverse](const HTMLElement &__ele) -> bool {
+                return (__ele[L"id"] == id) ^ reverse;
             },
             recursive);
     }
@@ -209,39 +248,40 @@ public:  // get information: advanced
             recursive);
     }
 
-    void GetElementsByFather(std::set<HTMLElement::PT> &results, const wstring &father, bool recursive, bool first) const {
+    void GetElementsByFather(std::set<HTMLElement::PT> &results, const wstring &father, bool recursive, bool first, bool reverse) const {
         this->GetElementsByFilter(
             [&results, &first](const HTMLElement::PT pt) -> bool {
                 results.insert(pt);
                 return !first;
             },
-            [&father](const HTMLElement &__ele) -> bool {
-                return (__ele._father.lock()->GetTag() == father);
+            [&father, &reverse](const HTMLElement &__ele) -> bool {
+                return (__ele._father.lock()->GetTag() == father) ^ reverse;
             },
             recursive);
     }
 
-    void GetElementsByClass(std::set<HTMLElement::PT> &results, const wstring &cls, bool recursive, bool first) const {
+    void GetElementsByClass(std::set<HTMLElement::PT> &results, const wstring &cls, bool recursive, bool first, bool reverse) const {
         this->GetElementsByFilter(
             [&results, &first](const HTMLElement::PT pt) -> bool {
                 results.insert(pt);
                 return !first;
             },
-            [&cls](const HTMLElement &__ele) -> bool {
-                return (__ele[L"class"] == cls);
+            [&cls, &reverse](const HTMLElement &__ele) -> bool {
+                debug << __ele.GetTag() << ", " << __ele[L"class"] << L", " << cls << endl;
+                return (__ele[L"class"] == cls) ^ reverse;
             },
             recursive);
     }
 
-    void GetElementsByAttribute(std::set<HTMLElement::PT> &results, const wstring &key, bool recursive, bool first) const {
+    void GetElementsByAttribute(std::set<HTMLElement::PT> &results, const wstring &key, bool recursive, bool first, bool reverse) const {
         if (key == L"empty") {
             this->GetElementsByFilter(
                 [&results, &first](const HTMLElement::PT pt) -> bool {
                     results.insert(pt);
                     return !first;
                 },
-                [](const HTMLElement &__ele) -> bool {
-                    return (__ele._children.size() == 0);
+                [&reverse](const HTMLElement &__ele) -> bool {
+                    return (__ele._children.size() == 0) ^ reverse;
                 },
                 recursive);
         }
@@ -253,8 +293,8 @@ public:  // get information: advanced
                     results.insert(pt);
                     return !first;
                 },
-                [&splitted](const HTMLElement &__ele) -> bool {
-                    return (__ele[splitted[0]] == splitted[1]);
+                [&splitted, &reverse](const HTMLElement &__ele) -> bool {
+                    return (__ele[splitted[0]] == splitted[1]) ^ reverse;
                 },
                 recursive);
 
@@ -264,21 +304,22 @@ public:  // get information: advanced
                     results.insert(pt);
                     return !first;
                 },
-                [&key](const HTMLElement &__ele) -> bool {
-                    return (__ele._attributes.count(key) || (key == L"optional" && __ele._attributes.count(L"required") == 0));
+                [&key, &reverse](const HTMLElement &__ele) -> bool {
+                    return ((__ele._attributes.count(key) || \
+                                (key == L"optional" && _INPUT.count(__ele.GetTag()) && __ele._attributes.count(L"required") == 0))) ^ reverse;
                 },
                 recursive);
         }
     }
 
-    void GetElementsByTag(std::set<HTMLElement::PT> &results, const wstring &tag, bool recursive, bool first) const {
+    void GetElementsByTag(std::set<HTMLElement::PT> &results, const wstring &tag, bool recursive, bool first, bool reverse) const {
         this->GetElementsByFilter(
             [&results, &first](const HTMLElement::PT pt) -> bool {
                 results.insert(pt);
                 return !first;
             },
-            [&tag](const HTMLElement &__ele) -> bool {
-                return __ele.GetTag() == tag;
+            [&tag, &reverse](const HTMLElement &__ele) -> bool {
+                return (__ele.GetTag() == tag) ^ reverse;
             },
             recursive);
     }
@@ -406,7 +447,7 @@ private:  // fields
         L"source", L"br", L"hr", L"base", L"area", L"svg"};
 
     // the set of elements to be deleted
-    static inline std::unordered_set<wstring> _FILTER = {L"script", L"meta", L"link", L"img", L"input", L"svg",\
+    static inline std::unordered_set<wstring> _FILTER = {L"script", L"meta", L"link", L"img", L"svg",\
         L"style"};
 
     // the set of delimiter of class
@@ -483,7 +524,7 @@ private:  // element parsing
         fa->_children.push_back(ep);
     }
 
-    void _close_ele(const wstring &tag_type, const wstring & tag_text) {
+    void _close_ele(const wstring &tag_type, const wstring & tag_text = L"") {
         // assert: size of element stack
         if (_ele_stack.size() <= 1) {
             std::wcerr << L"\033[1;31mExtra element \"" << tag_type << L"\" found!\033[0;m" << endl;
@@ -501,7 +542,9 @@ private:  // element parsing
         }
 
         // add text
-        _ele_stack.top()->AddText(tag_text);
+        if (tag_text.size()) {
+            _ele_stack.top()->AddText(tag_text);
+        }
         _ele_stack.pop();
     }
 
@@ -577,6 +620,11 @@ private:  // element parsing
                     this->_close_ele(tag_type, tag_text);
                     added = true;
                     debug << "\n## close ##\n" << endl;
+                } else if (this->_is_ignore(tag_type)) {
+                    this->_new_ele(tag_type, false);
+                    this->_close_ele(tag_type);
+                    added = true;
+                    debug << "\n## dummy close ##\n" << endl;
                 }
                 // safe_pop(this->_char_stack);
 
@@ -590,7 +638,7 @@ private:  // element parsing
 
             case SELF_CLOSING: {
                 if (!this->_FILTER.count(tag_type)) {
-                    this->_new_ele(tag_raw, true);
+                    this->_new_ele(tag_raw.substr(0, tag_raw.size()-1), true);
                     debug << "\n## self-closed ##\n" << endl;
                 }
                 break;
@@ -830,7 +878,8 @@ private:
         return ;
     }
 
-    void _get_next(const wstring &path, bool recursive, bool append, bool first, bool attr, bool current) {
+    void _get_next(const wstring &path, bool recursive, bool append, bool first, bool attr, bool reverse, bool sequential, bool current) {
+        debug << L"NEXT: " << path << recursive << append << first << attr << reverse << current << endl;
         if (current) {
             this->_filter_current(path, append, attr);
             return ;
@@ -841,29 +890,36 @@ private:
             ret = this->_selected;
         }
 
-        if (attr) {
+        if (sequential) {
             for (const auto &ep: sel) {
-                ep->GetElementsByAttribute(ret, path, recursive, first);
+                ep->GetBrothersByTag(ret, path, first, reverse);
+            }
+
+        } else if (attr) {
+            for (const auto &ep: sel) {
+                ep->GetElementsByAttribute(ret, path, recursive, first, reverse);
             }
 
         } else if (path == L"*") {
-            for (const auto &ep: sel) {
-                ep->GetAllElements(ret);
+            if (!reverse) {
+                for (const auto &ep: sel) {
+                    ep->GetAllElements(ret);
+                }
             }
 
         } else if (path[0] == L'.') {
             for (const auto &ep: sel) {
-                ep->GetElementsByClass(ret, path.substr(1), recursive, first);
+                ep->GetElementsByClass(ret, path.substr(1), recursive, first, reverse);
             }
 
         } else if (path[0] == L'#') {
             for (const auto &ep: sel) {
-                ep->GetElementsById(ret, path.substr(1), recursive, first);
+                ep->GetElementsById(ret, path.substr(1), recursive, first, reverse);
             }
 
         } else {
             for (const auto &ep: sel) {
-                ep->GetElementsByTag(ret, path, recursive, first);
+                ep->GetElementsByTag(ret, path, recursive, first, reverse);
             }
         }
 
@@ -900,7 +956,7 @@ private:
         trimmed_expr = std::regex_replace(trimmed_expr, this->_bracket, L"$");  // "[word]" -> "[word$"
         debug << L"trimmed_expr: " << trimmed_expr << endl;
 
-        vector<wstring> path = split(trimmed_expr, {L'&', L'>', L',', L'+', L'~', L'$', L':', L'['}, false, true);
+        vector<wstring> path = split(trimmed_expr, {L'&', L'>', L',', L'+', L'~', L'$', L':', L'[', L'!'}, false, true);
         unsigned int state = 0;
         bool continuous = false;
         // 0 select by ancestors
@@ -908,6 +964,8 @@ private:
         // 2 append the last one(s)
         // 3 first element only
         // 4 find by attributes
+        // 5 not
+        // 6 sequential search
 
         for (const auto &ele: path) {
             debug << ele << L' ' << std::endl;
@@ -915,7 +973,7 @@ private:
                 continue;
             }
             bool last = continuous;
-            if (ele == L"&" || ele == L"~") {  // self-defined, used to signal recursively find by tag
+            if (ele == L"&") {  // self-defined, used to signal recursively find by tag
                 state = 0b0;
                 continuous = false;
             } else if (ele == L">") {
@@ -927,16 +985,23 @@ private:
             } else if (ele == L"+") {
                 state = 0b100;
                 continuous = false;
+            } else if (ele == L"!") {
+                state = 0b10000;
+                continuous = false;
+            } else if (ele == L"~") {
+                state = 0b100000;
+                continuous = false;
             } else if (ele == L":" || ele == L"[") {
                 state = 0b1000;
-                // continuous = true;
-            } else if (ele == L":root") {
+                // continuous = true;  doesn't need to set continuous
+            } else if (state == 0b1000 && ele == L"root") {
                 this->_last = this->_selected;
                 this->_selected = { _parser.GetRoot() };
             } else {
                 continuous = true;
                 debug << last << continuous << endl;
-                this->_get_next(ele, ~state & 0b1, state & 0b10, state & 0b100, state & 0b1000, !(last ^ continuous));
+                this->_get_next(ele, ~state & 0b1, state & 0b10, state & 0b100, state & 0b1000, state & 0b10000, state & 0b100000,\
+                        !(last ^ continuous));
             }
         }
     }
