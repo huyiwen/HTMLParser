@@ -7,6 +7,7 @@
 
 #include <vector>
 #include <unordered_set>
+#include <unordered_map>
 #include <set>
 #include <map>
 
@@ -34,10 +35,9 @@ using std::function;
 #ifdef DEBUG
 #define debug std::wcout
 #else
-std::wostringstream __debug__;
-#define debug __debug__
+std::wostringstream __null__;
+#define debug __null__
 #endif
-
 
 #if defined(__clang__) || defined(__GNUC__)
 
@@ -70,7 +70,7 @@ private:  // fields
 
 
 public:  // utils
-    
+
     friend class HTMLParser;  /* They want full access to elements information. */
     friend class ParserShell;  /* They want full access to elements information. */
 
@@ -78,10 +78,10 @@ public:  // utils
     typedef function<bool (const HTMLElement&)> FT;  // filter type
     typedef function<bool (const PT)> AT;  // if return false: the signal of early_stopping
     typedef vector<PT> RT;  // return type
-    
+
 
 public:  // initialization
-    
+
     // root node
     HTMLElement()
         : _father(), _depth(0), _tag(L"root")
@@ -116,6 +116,7 @@ public:  // initialization
     void AddText(const wstring &text) {
         wstring stripped_text = strip(text);
         if (stripped_text.size()) {
+            debug << "ADD_TEXT: " << stripped_text << endl;
             this->_children.push_back(std::make_shared<HTMLElement>(stripped_text, this->shared_from_this()));
         }
     }
@@ -220,16 +221,54 @@ public:  // get information: advanced
             recursive);
     }
 
-    void GetElementsByClass(std::set<HTMLElement::PT> &results, const wstring &id, bool recursive, bool first) const {
+    void GetElementsByClass(std::set<HTMLElement::PT> &results, const wstring &cls, bool recursive, bool first) const {
         this->GetElementsByFilter(
             [&results, &first](const HTMLElement::PT pt) -> bool {
                 results.insert(pt);
                 return !first;
             },
-            [&id](const HTMLElement &__ele) -> bool {
-                return (__ele[L"class"] == id);
+            [&cls](const HTMLElement &__ele) -> bool {
+                return (__ele[L"class"] == cls);
             },
             recursive);
+    }
+
+    void GetElementsByAttribute(std::set<HTMLElement::PT> &results, const wstring &key, bool recursive, bool first) const {
+        if (key == L"empty") {
+            this->GetElementsByFilter(
+                [&results, &first](const HTMLElement::PT pt) -> bool {
+                    results.insert(pt);
+                    return !first;
+                },
+                [](const HTMLElement &__ele) -> bool {
+                    return (__ele._children.size() == 0);
+                },
+                recursive);
+        }
+        
+        vector<wstring> splitted = split(key, L'=');
+        if (splitted.size() == 2) {
+            this->GetElementsByFilter(
+                [&results, &first](const HTMLElement::PT pt) -> bool {
+                    results.insert(pt);
+                    return !first;
+                },
+                [&splitted](const HTMLElement &__ele) -> bool {
+                    return (__ele[splitted[0]] == splitted[1]);
+                },
+                recursive);
+
+        } else {
+            this->GetElementsByFilter(
+                [&results, &first](const HTMLElement::PT pt) -> bool {
+                    results.insert(pt);
+                    return !first;
+                },
+                [&key](const HTMLElement &__ele) -> bool {
+                    return (__ele._attributes.count(key) || (key == L"optional" && __ele._attributes.count(L"required") == 0));
+                },
+                recursive);
+        }
     }
 
     void GetElementsByTag(std::set<HTMLElement::PT> &results, const wstring &tag, bool recursive, bool first) const {
@@ -288,6 +327,7 @@ public:  // get information: advanced
         }
         all_attributes.pop_back();
         if (this->_basic_text.size()) {
+            debug << "__text__" << endl;
             return this->_basic_text;
         }
         if (!this->_self_closed) {
@@ -297,12 +337,40 @@ public:  // get information: advanced
         }
     }
 
-    wstring GetAllHTML() const {
+    wstring GetInnerHTML(bool recursive) const {
         wstring all_html;
-        this->Traverse([&all_html](const HTMLElement &__ele) {
-            all_html += __ele.GetOuterHTML();
-        }, true, false);
+        for (const auto &child: this->_children) {
+            if (child->_basic_text.size()) {
+                all_html += child->_basic_text;
+            } else {
+                all_html += child->GetAllHTML(true);
+            }
+        }
+        debug << "GetInnerHTML: " << all_html << endl;
         return all_html;
+    }
+
+    wstring GetAllHTML(bool attributes = true) const {
+        wstring all_attributes = L" ";
+        if (attributes && this->_attributes.size()) {
+            for (const auto &attr: this->_attributes) {
+                if (attr.second.size()) {
+                    all_attributes += attr.first + L"=" + attr.second + L" ";
+                } else {
+                    all_attributes += attr.first + L" ";
+                }
+            }
+        }
+        all_attributes.pop_back();
+        debug << this->GetTag() << endl;
+        if (this->_basic_text.size()) {
+            return this->_basic_text;
+        }
+        if (!this->_self_closed) {
+            return L"<" + this->_tag + all_attributes + L">" + this->GetInnerHTML(true) + L"</" + this->_tag + L">";
+        } else {
+            return L"<" + this->_tag + all_attributes + L"/>";
+        }
     }
 
 };
@@ -405,7 +473,7 @@ private:  // char parsing
 
 
 private:  // element parsing
-    
+
     void _new_ele(const wstring &tag_raw, const bool &self_closed) {
         auto fa = this->_ele_stack.top();
         auto ep = std::make_shared<HTMLElement>(fa, false, tag_raw, self_closed);
@@ -445,7 +513,7 @@ private:  // element parsing
     //    1. self-closed element like <br/> or <br>
     //    2. starting element like <h1>
     //    3. closing element like </h1>
-    //  
+    //
     //    We subdivide a fourth type from the self-closed: script-like element.
     //    That is those without any natrual language text.
     int _pop_element(bool &script, bool &exclamation) {
@@ -519,7 +587,7 @@ private:  // element parsing
                 }
                 break;
             };
-            
+
             case SELF_CLOSING: {
                 if (!this->_FILTER.count(tag_type)) {
                     this->_new_ele(tag_raw, true);
@@ -641,7 +709,7 @@ private:
         "HTMLParser Shell  designed by huyiwen\n"\
         "  clear        clear selected element and go back to root\n"\
         "  css expr     select css  e.g. css #firstname\n"\
-        "  get type     get information type = [texts,all_text,html,href]\n"\
+        "  get type     get information type = [text,all_text,html,all_html,href]\n"\
         "  reload       reload html\n"\
         "  help         show this information\n"\
         "  exit\n"\
@@ -710,14 +778,75 @@ private:
         }
     }
 
-    void _get_next(const wstring &path, const bool &recursive, const bool &append, const bool &first) {
+    void _filter_current(const wstring &path, bool append, bool attr) {
         std::set<HTMLElement::PT> ret;
         std::set<HTMLElement::PT> &sel = append ? this->_last : this->_selected;
         if (append) {
             ret = this->_selected;
         }
 
-        if (path == L"*") {
+        if (attr) {
+            if (path == L"empty") {
+                for (const auto &ep: sel) {
+                    if (ep->_children.size() == 0) {
+                        ret.insert(ep);
+                    }
+                }
+            } else {
+                for (const auto &ep: sel) {
+                    if (ep->_attributes.count(path)) {
+                        ret.insert(ep);
+                    }
+                }
+            }
+
+        } else if (path == L"*") {
+            ret = this->_selected;
+
+        } else if (path[0] == L'.') {
+            for (const auto &ep: sel) {
+                if (ep->GetAttribute(L"class") == path.substr(1)) {
+                    ret.insert(ep);
+                }
+            }
+
+        } else if (path[0] == L'#') {
+            for (const auto &ep: sel) {
+                if (ep->GetAttribute(L"id") == path.substr(1)) {
+                    ret.insert(ep);
+                }
+            }
+
+        } else {
+            for (const auto &ep: sel) {
+                if (ep->GetTag() == path) {
+                    ret.insert(ep);
+                }
+            }
+        }
+
+        this->_last = _selected;
+        this->_selected = ret;
+        return ;
+    }
+
+    void _get_next(const wstring &path, bool recursive, bool append, bool first, bool attr, bool current) {
+        if (current) {
+            this->_filter_current(path, append, attr);
+            return ;
+        }
+        std::set<HTMLElement::PT> ret;
+        std::set<HTMLElement::PT> &sel = append ? this->_last : this->_selected;
+        if (append) {
+            ret = this->_selected;
+        }
+
+        if (attr) {
+            for (const auto &ep: sel) {
+                ep->GetElementsByAttribute(ret, path, recursive, first);
+            }
+
+        } else if (path == L"*") {
             for (const auto &ep: sel) {
                 ep->GetAllElements(ret);
             }
@@ -743,83 +872,110 @@ private:
         return ;
     }
 
-    void _get_elements(const wstring &expr) {
-        std::wregex between (L"\\b\\s+\\b");
-        std::wregex between_dot (L"\\b\\s+\\.");
-        std::wregex whitespaces (L"\\s+");
-        wstring trimmed_expr = std::regex_replace(expr, between, L"&");
-        trimmed_expr = std::regex_replace(trimmed_expr, between_dot, L"&.");
-        trimmed_expr = std::regex_replace(trimmed_expr, whitespaces, L"");
+private:
 
+    std::wregex _between = std::wregex(L"\\b\\s+\\b");
+    std::wregex _between_dot = std::wregex(L"\\b\\s+\\.");
+    std::wregex _dot_between = std::wregex(L"\\b\\.\\b");
+    std::wregex _sharp_between = std::wregex(L"\\b#\\b");
+    std::wregex _bracket = std::wregex(L"\\]");
+    std::wregex _whitespaces = std::wregex(L"\\s+");
+
+    void _get_elements(const wstring &expr) {
+        wstring trimmed_expr = std::regex_replace(expr, this->_between, L"&");  // "word word" -> "word&word"
         debug << L"trimmed_expr: " << trimmed_expr << endl;
-        vector<wstring> path = split(trimmed_expr, {L'&', L'>', L',', L'+', L'~'}, false, true);
-        bool son = false;  // next element(s) is among the direct son(s)
-        bool append = false;  // next element(s) should append the last one(s)
-        bool first = false;  // only get the first element
+
+        trimmed_expr = std::regex_replace(trimmed_expr, this->_between_dot, L"&.");  // "word .word" -> "word&.word"
+        debug << L"trimmed_expr: " << trimmed_expr << endl;
+
+        trimmed_expr = std::regex_replace(trimmed_expr, this->_whitespaces, L"");  // " " -> ""
+        debug << L"trimmed_expr: " << trimmed_expr << endl;
+
+        trimmed_expr = std::regex_replace(trimmed_expr, this->_dot_between, L"$.");  // "word.word" -> "word$.word"
+        debug << L"trimmed_expr: " << trimmed_expr << endl;
+
+        trimmed_expr = std::regex_replace(trimmed_expr, this->_sharp_between, L"$#");  // "word#word" -> "word$#word"
+        debug << L"trimmed_expr: " << trimmed_expr << endl;
+
+        trimmed_expr = std::regex_replace(trimmed_expr, this->_bracket, L"$");  // "[word]" -> "[word$"
+        debug << L"trimmed_expr: " << trimmed_expr << endl;
+
+        vector<wstring> path = split(trimmed_expr, {L'&', L'>', L',', L'+', L'~', L'$', L':', L'['}, false, true);
+        unsigned int state = 0;
+        bool continuous = false;
+        // 0 select by ancestors
+        // 1 among the direct son(s)
+        // 2 append the last one(s)
+        // 3 first element only
+        // 4 find by attributes
 
         for (const auto &ele: path) {
             debug << ele << L' ' << std::endl;
-            if (ele == L"&") {
-                first = false;
-                son = false;
-                append = false;
+            if (ele == L"$") {
+                continue;
+            }
+            bool last = continuous;
+            if (ele == L"&" || ele == L"~") {  // self-defined, used to signal recursively find by tag
+                state = 0b0;
+                continuous = false;
             } else if (ele == L">") {
-                first = false;
-                son = true;
-                append = false;
-            } else if (ele == L",") {
-                (void)first;
-                (void)son;
-                append = true;
+                state = 0b1;
+                continuous = false;
+            } else if (ele == L",") {  // element-wise or: just append the last one
+                state |= 0b10;
+                continuous = false;
             } else if (ele == L"+") {
-                first = true;
-                son = false;
-                append = false;
+                state = 0b100;
+                continuous = false;
+            } else if (ele == L":" || ele == L"[") {
+                state = 0b1000;
+                // continuous = true;
+            } else if (ele == L":root") {
+                this->_last = this->_selected;
+                this->_selected = { _parser.GetRoot() };
             } else {
-                this->_get_next(ele, !son, append, first);
+                continuous = true;
+                debug << last << continuous << endl;
+                this->_get_next(ele, ~state & 0b1, state & 0b10, state & 0b100, state & 0b1000, !(last ^ continuous));
             }
         }
     }
 
     void _get_info(const string &type) {
-        if (type == "texts") {
-            wstring all_text;
+        if (type == "text") {
             traverse(this->_selected,
-                    [&all_text](const HTMLElement& __ele) {
-                        all_text += __ele.GetInnerText(L'\n');
+                    [](const HTMLElement& __ele) {
+                        wcout << __ele.GetInnerText(L'\n');
                     });
-            all_text.pop_back();
-            wcout << all_text << endl;
+            wcout << endl;
 
         } else if (type == "all_text") {
-            wstring all_text;
             int idx = 0;
             traverse(this->_selected,
-                    [&all_text, &idx](const HTMLElement& __ele) {
-                        all_text += std::to_wstring(idx++) + L": " + __ele.GetAllText() + L"\n";
+                    [&idx](const HTMLElement& __ele) {
+                        wcout << idx++ << L": " + __ele.GetAllText() << endl;
                     });
-            all_text.pop_back();
-            wcout << all_text << endl;
 
         } else if (type == "html") {
-            wstring all_html;
             traverse(this->_selected,
-                    [&all_html](const HTMLElement& __ele) {
-                        all_html += __ele.GetAllHTML() + L'\n';
+                    [](const HTMLElement& __ele) {
+                        wcout << __ele.GetOuterHTML() << endl;
                     });
-            wcout << all_html << endl;
+
+        } else if (type == "all_html") {
+            traverse(this->_selected,
+                    [](const HTMLElement& __ele) {
+                        wcout << __ele.GetAllHTML() << endl;
+                    });
 
         } else if (type == "href") {
-            wstring all_href;
             traverse(this->_selected,
-                    [&all_href](const HTMLElement& __ele) {
+                    [](const HTMLElement& __ele) {
                         wstring tmp = __ele[L"href"];
                         if (tmp.size()) {
-                            all_href += tmp + L"\n";
+                            wcout << tmp << endl;
                         }
                     });
-            all_href.pop_back();
-            wcout << all_href << endl;
         } else {
             cout << "Not supported type " << type << endl;
         }
@@ -860,12 +1016,12 @@ public:
             wcout.flush();
             string ln;
             std::getline(std::cin, ln);
-            
+
             std::vector<string> untied;
             split(ln, ' ', untied, true);
 
             // wcout << this->_parser.GetRoot()->_children[0]->_children[1]->GetAttribute(L"link") << endl;
-            
+
             if (untied.size() < 1) {
                 continue;
             }
@@ -874,7 +1030,8 @@ public:
                 cout << this->HELP << endl;
 
             } else if (untied[0] == "clear") {
-                _selected = { _parser.GetRoot() };
+                this->_last = this->_selected;
+                this->_selected = { _parser.GetRoot() };
 
             } else if (untied[0] == "css") {
                 this->_get_elements(to_wstring(untied[1]));
